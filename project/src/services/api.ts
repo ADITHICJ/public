@@ -1,3 +1,5 @@
+// services/api.js
+
 import axios from 'axios';
 
 const API_URL = 'http://localhost:3000/api';
@@ -65,35 +67,53 @@ const mockDashboardData = {
   ]
 };
 
+// ========== API Calls ==========
+
+// Fetch dashboard data (REAL API)
 export const fetchDashboardData = async () => {
   try {
-    // In a real implementation, we would use:
-    // const response = await axios.get(`${API_URL}/dashboard`);
-    // return response.data;
-    
-    // For now, return mock data with a simulated delay
-    await new Promise(resolve => setTimeout(resolve, 800));
-    return mockDashboardData;
+    const response = await axios.get('/api/dashboard-data'); // Your real endpoint
+    return response.data;
   } catch (error) {
     console.error('Error fetching dashboard data:', error);
     throw error;
   }
 };
 
-export const submitFeedback = async (data: any) => {
+// Fetch twitter data (REAL API)
+export const fetchTwitterData = async () => {
   try {
-    // In a real implementation, we would use:
-    // const response = await axios.post(`${API_URL}/feedback`, data);
-    // return response.data;
-    
-    // For now, simulate API call with a delay and mock response
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Simulate sentiment analysis based on text content
+    const response = await axios.get('http://localhost:5000/api/twitter');
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching Twitter data:', error);
+    throw error;
+  }
+};
+
+// ========== Mock Services (for development/demo) ==========
+
+// Fetch dashboard data (MOCK)
+export const fetchMockDashboardData = async () => {
+  try {
+    await new Promise(resolve => setTimeout(resolve, 800)); // simulate delay
+    return mockDashboardData;
+  } catch (error) {
+    console.error('Error fetching mock dashboard data:', error);
+    throw error;
+  }
+};
+
+// Submit feedback (MOCK)
+export const submitFeedback = async (data) => {
+  try {
+    await new Promise(resolve => setTimeout(resolve, 1000)); // simulate delay
+
+    // Simulate simple sentiment analysis
     const text = data.text.toLowerCase();
     let sentiment = 'neutral';
     let score = 0.5;
-    
+
     if (text.includes('great') || text.includes('good') || text.includes('excellent') || text.includes('helpful') || text.includes('thank')) {
       sentiment = 'positive';
       score = 0.8 + Math.random() * 0.2;
@@ -106,7 +126,7 @@ export const submitFeedback = async (data: any) => {
     } else {
       score = 0.4 + Math.random() * 0.2;
     }
-    
+
     return {
       id: Math.floor(Math.random() * 1000),
       sentiment,
@@ -119,14 +139,10 @@ export const submitFeedback = async (data: any) => {
   }
 };
 
-export const fetchFeedbackList = async (filters: any = {}) => {
+// Fetch feedback list (MOCK)
+export const fetchFeedbackList = async (filters = {}) => {
   try {
-    // In a real implementation, we would use:
-    // const response = await axios.get(`${API_URL}/feedback`, { params: filters });
-    // return response.data;
-    
-    // For now, implement later when needed
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, 500)); // simulate delay
     return [];
   } catch (error) {
     console.error('Error fetching feedback list:', error);

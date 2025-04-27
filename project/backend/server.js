@@ -2,9 +2,14 @@ import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import sqlite3 from 'sqlite3';
+import axios from 'axios';
+import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { analyzeText } from './sentiment.js';
+
+// Load environment variables
+dotenv.config();
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -23,7 +28,7 @@ app.use(morgan('dev'));
 const dbPath = join(__dirname, 'feedback.db');
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
-    console.error('Error connecting to database:', err);
+    console.error('Error connecting to database:', err.message);
   } else {
     console.log('Connected to SQLite database');
     initDatabase();
@@ -33,7 +38,6 @@ const db = new sqlite3.Database(dbPath, (err) => {
 // Initialize database tables
 function initDatabase() {
   db.serialize(() => {
-    // Feedback table
     db.run(`
       CREATE TABLE IF NOT EXISTS feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,8 +50,6 @@ function initDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    
-    // Keywords table
     db.run(`
       CREATE TABLE IF NOT EXISTS keywords (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,12 +58,28 @@ function initDatabase() {
         FOREIGN KEY (feedback_id) REFERENCES feedback (id)
       )
     `);
-    
     console.log('Database tables initialized');
   });
 }
 
-// API Routes
+// Simple keyword extraction
+function extractKeywords(text) {
+  const commonKeywords = [
+    'service', 'wait', 'time', 'staff', 'helpful', 'process',
+    'website', 'online', 'form', 'parking', 'clean', 'facility'
+  ];
+  const words = text.toLowerCase()
+    .replace(/[^\w\s]/g, '')
+    .split(/\s+/);
+
+  return [...new Set(words)]
+    .filter(word => commonKeywords.includes(word) && word.length > 2)
+    .slice(0, 5);
+}
+
+// Routes
+
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date() });
 });
@@ -70,43 +88,35 @@ app.get('/api/health', (req, res) => {
 app.post('/api/feedback', async (req, res) => {
   try {
     const { text, source, email, category } = req.body;
-    
+
     if (!text || !source) {
       return res.status(400).json({ error: 'Text and source are required' });
     }
-    
-    // Analyze sentiment
+
     const analysis = await analyzeText(text);
-    
-    // Insert into database
+
     db.run(
-      `INSERT INTO feedback (text, source, email, category, sentiment, score) 
+      `INSERT INTO feedback (text, source, email, category, sentiment, score)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [text, source, email || null, category || null, analysis.sentiment, analysis.score],
-      function(err) {
+      function (err) {
         if (err) {
-          console.error('Database error:', err);
+          console.error('Database error:', err.message);
           return res.status(500).json({ error: 'Failed to save feedback' });
         }
-        
-        // Extract and save keywords (simplified)
+
         const feedbackId = this.lastID;
         const keywords = extractKeywords(text);
-        
-        const keywordInserts = keywords.map(keyword => {
-          return new Promise((resolve, reject) => {
-            db.run(
-              'INSERT INTO keywords (feedback_id, keyword) VALUES (?, ?)',
-              [feedbackId, keyword],
-              err => {
-                if (err) reject(err);
-                else resolve();
-              }
-            );
-          });
-        });
-        
-        Promise.all(keywordInserts)
+
+        const keywordPromises = keywords.map(keyword => new Promise((resolve, reject) => {
+          db.run(
+            'INSERT INTO keywords (feedback_id, keyword) VALUES (?, ?)',
+            [feedbackId, keyword],
+            err => (err ? reject(err) : resolve())
+          );
+        }));
+
+        Promise.all(keywordPromises)
           .then(() => {
             res.status(201).json({
               id: feedbackId,
@@ -116,7 +126,7 @@ app.post('/api/feedback', async (req, res) => {
             });
           })
           .catch(err => {
-            console.error('Error saving keywords:', err);
+            console.error('Error saving keywords:', err.message);
             res.status(201).json({
               id: feedbackId,
               sentiment: analysis.sentiment,
@@ -127,47 +137,43 @@ app.post('/api/feedback', async (req, res) => {
       }
     );
   } catch (error) {
-    console.error('Error processing feedback:', error);
+    console.error('Error processing feedback:', error.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Get feedback with filtering
+// Get feedback (with filters)
 app.get('/api/feedback', (req, res) => {
   const { sentiment, source, startDate, endDate, limit = 100, offset = 0 } = req.query;
-  
+
   let query = 'SELECT * FROM feedback WHERE 1=1';
   const params = [];
-  
+
   if (sentiment) {
     query += ' AND sentiment = ?';
     params.push(sentiment);
   }
-  
   if (source) {
     query += ' AND source = ?';
     params.push(source);
   }
-  
   if (startDate) {
     query += ' AND created_at >= ?';
     params.push(startDate);
   }
-  
   if (endDate) {
     query += ' AND created_at <= ?';
     params.push(endDate);
   }
-  
+
   query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
   params.push(limit, offset);
-  
+
   db.all(query, params, (err, rows) => {
     if (err) {
-      console.error('Database error:', err);
+      console.error('Database error:', err.message);
       return res.status(500).json({ error: 'Failed to retrieve feedback' });
     }
-    
     res.json(rows);
   });
 });
@@ -181,89 +187,64 @@ app.get('/api/dashboard', (req, res) => {
     recentFeedback: [],
     keywordsData: []
   };
-  
-  // Get sentiment counts
+
   db.get(`
     SELECT 
-      COUNT(*) as total,
-      SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) as positive,
-      SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) as negative,
-      SUM(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) as neutral,
-      SUM(CASE WHEN sentiment = 'urgent' THEN 1 ELSE 0 END) as urgent
+      COUNT(*) AS total,
+      SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) AS positive,
+      SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) AS negative,
+      SUM(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) AS neutral,
+      SUM(CASE WHEN sentiment = 'urgent' THEN 1 ELSE 0 END) AS urgent
     FROM feedback
   `, [], (err, counts) => {
     if (err) {
-      console.error('Database error:', err);
+      console.error('Database error:', err.message);
       return res.status(500).json({ error: 'Failed to retrieve dashboard data' });
     }
-    
-    dashboardData.total = counts.total;
-    dashboardData.positive = counts.positive;
-    dashboardData.negative = counts.negative;
-    dashboardData.neutral = counts.neutral;
-    dashboardData.urgent = counts.urgent;
-    
-    // Get sentiment by source
+
+    dashboardData.sentimentCounts = counts;
+
     db.all(`
       SELECT 
         source,
-        SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) as positive,
-        SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) as negative,
-        SUM(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) as neutral
+        SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) AS positive,
+        SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) AS negative,
+        SUM(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) AS neutral
       FROM feedback
       GROUP BY source
     `, [], (err, sources) => {
-      if (err) {
-        console.error('Database error:', err);
-      } else {
-        dashboardData.sourcesData = sources;
-      }
-      
-      // Get recent feedback
+      if (!err) dashboardData.sourcesData = sources;
+
       db.all(`
-        SELECT id, text, sentiment, source, datetime(created_at) as date
+        SELECT id, text, sentiment, source, datetime(created_at) AS date
         FROM feedback
         ORDER BY created_at DESC
         LIMIT 5
       `, [], (err, recent) => {
-        if (err) {
-          console.error('Database error:', err);
-        } else {
-          dashboardData.recentFeedback = recent;
-        }
-        
-        // Get top keywords
+        if (!err) dashboardData.recentFeedback = recent;
+
         db.all(`
-          SELECT keyword, COUNT(*) as count
+          SELECT keyword, COUNT(*) AS count
           FROM keywords
           GROUP BY keyword
           ORDER BY count DESC
           LIMIT 7
         `, [], (err, keywords) => {
-          if (err) {
-            console.error('Database error:', err);
-          } else {
-            dashboardData.keywordsData = keywords;
-          }
-          
-          // Get sentiment over time (by month)
+          if (!err) dashboardData.keywordsData = keywords;
+
           db.all(`
             SELECT 
-              strftime('%Y-%m', created_at) as date,
-              SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) as positive,
-              SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) as negative,
-              SUM(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) as neutral
+              strftime('%Y-%m', created_at) AS date,
+              SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) AS positive,
+              SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) AS negative,
+              SUM(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) AS neutral
             FROM feedback
             GROUP BY date
             ORDER BY date
             LIMIT 6
           `, [], (err, trends) => {
-            if (err) {
-              console.error('Database error:', err);
-            } else {
-              dashboardData.sentimentOverTime = trends;
-            }
-            
+            if (!err) dashboardData.sentimentOverTime = trends;
+
             res.json(dashboardData);
           });
         });
@@ -272,32 +253,39 @@ app.get('/api/dashboard', (req, res) => {
   });
 });
 
-// Simple keyword extraction (in a real app, use a proper NLP library)
-function extractKeywords(text) {
-  const commonKeywords = [
-    'service', 'wait', 'time', 'staff', 'helpful', 'process', 
-    'website', 'online', 'form', 'parking', 'clean', 'facility'
-  ];
-  
-  const words = text.toLowerCase()
-    .replace(/[^\w\s]/g, '')
-    .split(/\s+/);
-  
-  return [...new Set(words)]
-    .filter(word => commonKeywords.includes(word) && word.length > 2)
-    .slice(0, 5);
-}
+// Fetch recent tweets (NEW API)
+app.get('/api/twitter', async (req, res) => {
+  try {
+    const response = await axios.get(
+      'https://api.twitter.com/2/tweets/search/recent',
+      {
+        params: {
+          query: 'customer service OR feedback OR support',
+          max_results: 10,
+          'tweet.fields': 'created_at,author_id,text'
+        },
+        headers: {
+          Authorization: `Bearer ${process.env.TWITTER_BEARER_TOKEN}`
+        }
+      }
+    );
+    res.json(response.data);
+  } catch (error) {
+    console.error('Error fetching tweets:', error.message);
+    res.status(500).json({ error: 'Failed to fetch tweets' });
+  }
+});
 
 // Start server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
 
-// Handle shutdown
+// Handle graceful shutdown
 process.on('SIGINT', () => {
-  db.close((err) => {
+  db.close(err => {
     if (err) {
-      console.error('Error closing database:', err);
+      console.error('Error closing database:', err.message);
     } else {
       console.log('Database connection closed');
     }
