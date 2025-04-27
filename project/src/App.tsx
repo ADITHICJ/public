@@ -7,6 +7,7 @@ import Reports from './pages/Reports';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 
+
 function App() {
   return (
     <Router>
